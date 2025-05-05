@@ -80,7 +80,7 @@ The same image size is used as YOLOP, but in order not to lose any image informa
 For the usage of pix2pix, such as training and evaluation, please refer to the source code [pix2pix](https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix).
 
 ```shell
-python train.py --dataroot datasets/bdd100k --name train --model pix2pix --netG resnet_9blocks --preprocess none --batch_size 1 --dataset_mode aligned
+python pytorch-CycleGAN-and-pix2pix/train.py --dataroot datasets/bdd100k --name train --model pix2pix --netG resnet_9blocks --preprocess none --batch_size 1 --dataset_mode aligned
 ```
 Use pix2pix to defend against a certain attack method.
 
