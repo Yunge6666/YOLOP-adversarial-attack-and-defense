@@ -1,6 +1,6 @@
 .DS_Store
 debug*
-datasets/
+datasets/bdd100k
 checkpoints/
 results/
 build/

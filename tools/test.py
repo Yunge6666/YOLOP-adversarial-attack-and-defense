@@ -238,6 +238,10 @@ def parse_args():
     parser.add_argument('--gauss', type=str, help="Apply Gaussian Blurring to image. Specify ksize as WIDTHxHEIGHT(3x3)")
     parser.add_argument('--noise', type=float, help='Add Gaussian Noise to image. Specify sigma value for noise generation.(0.01)')
     parser.add_argument('--bit_depth', type=int, help='Choose bit value between 1 - 8(8)')
+    parser.add_argument('--use_pix2pix', 
+                        action='store_true',
+                        help='Whether to use pix2pix for image processing',
+                        default=False)
 
     args = parser.parse_args()
     return args
@@ -601,7 +605,7 @@ def main():
             da_segment_results, ll_segment_results, detect_results, total_loss, maps, times = validate(
                 epoch, cfg, valid_loader, valid_dataset, model, criterion,
                 exp_output_dir, base_tb_log_dir, writer_dict=writer_dict, logger=exp_logger, device=device, rank=-1,
-                attack_type=args.fgsm_attack_type, epsilon=epsilon, experiment_number=experiment_number, use_pix2pix=False, pix2pix_params=pix2pix_params,
+                attack_type=args.fgsm_attack_type, epsilon=epsilon, experiment_number=experiment_number, use_pix2pix=args.use_pix2pix, pix2pix_params=pix2pix_params,
                 resizer=args.resizer, quality=args.quality, bit_depth=args.bit_depth, 
                 gauss=args.gauss, border_type=args.border_type, noise=args.noise)
 
