@@ -23,7 +23,11 @@ from lib.core.Attacks.JSMA import calculate_saliency, find_and_perturb_highest_s
 from lib.core.Attacks.UAP import uap_sgd_yolop
 from lib.core.Attacks.CCP import color_channel_perturbation
 
-from lib.core.Defenses.PreProcessing import image_resizer, compress_jpg, gaussian_blur, noise, bit_depth
+import sys
+sys.path.append('/media/yunge/HDD1/REU-2024-YOLOP/pytorch-CycleGAN-and-pix2pix')  # Ensure the path is correct
+from options.test_options import TestOptions
+from models import create_model as create_pix2pix_model
+from data.base_dataset import get_transform
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -74,7 +78,6 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
     start = time.time()
     for i, (input, target, paths, shapes) in enumerate(train_loader):
         intermediate = time.time()
-        #print('tims:{}'.format(intermediate-start))
         num_iter = i + num_batch * (epoch - 1)
 
         if num_iter < num_warmup:
@@ -82,7 +85,6 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
             lf = lambda x: ((1 + math.cos(x * math.pi / cfg.TRAIN.END_EPOCH)) / 2) * \
                            (1 - cfg.TRAIN.LRF) + cfg.TRAIN.LRF  # cosine
             xi = [0, num_warmup]
-            # model.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
             for j, x in enumerate(optimizer.param_groups):
                 # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
                 x['lr'] = np.interp(num_iter, xi, [cfg.TRAIN.WARMUP_BIASE_LR if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
@@ -100,7 +102,6 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
         with amp.autocast(enabled=device.type != 'cpu'):
             outputs = model(input)
             total_loss, head_losses = criterion(outputs, target, shapes,model)
-            # print(head_losses)
 
         # compute gradient and do update step
         optimizer.zero_grad()
@@ -111,10 +112,6 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
         if rank in [-1, 0]:
             # measure accuracy and record loss
             losses.update(total_loss.item(), input.size(0))
-
-            # _, avg_acc, cnt, pred = accuracy(output.detach().cpu().numpy(),
-            #                                  target.detach().cpu().numpy())
-            # acc.update(avg_acc, cnt)
 
             # measure elapsed time
             batch_time.update(time.time() - start)
@@ -136,9 +133,11 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
                 # writer.add_scalar('train_acc', acc.val, global_steps)
                 writer_dict['train_global_steps'] = global_steps + 1
 
-def validate(epoch, config, val_loader, val_dataset, model, criterion, output_dir, tb_log_dir, perturbed_images=None, experiment_number=0, writer_dict=None, logger=None, device='cpu', rank=-1, epsilon=None, attack_type=None, channel=None, step_decay = None, num_pixels = None):
-    # Log the configuration
-    # logger.info(config)
+def validate(epoch, config, val_loader, val_dataset, model, criterion, output_dir, tb_log_dir, 
+             perturbed_images=None, experiment_number=0, writer_dict=None, logger=None, device='cpu', 
+             rank=-1, epsilon=None, attack_type=None, channel=None, step_decay = None, num_pixels = None, 
+             uap=None, saliency_maps=None, perturb_type=None, use_pix2pix=False, pix2pix_params=None,
+             resizer=None, quality=None, bit_depth=None, gauss=None, border_type=None, noise=None):
     
     results = []
 
@@ -169,7 +168,21 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
     # Create the directories if they do not exist
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(perturbed_save_dir, exist_ok=True)
-        
+    
+    # Create separate subdirectories for original and perturbed images
+    original_images_dir = os.path.join(perturbed_save_dir, 'original_images')
+    perturbed_images_dir = os.path.join(perturbed_save_dir, 'perturbed_images')
+    os.makedirs(original_images_dir, exist_ok=True)
+    os.makedirs(perturbed_images_dir, exist_ok=True)
+    
+    # Create directory for metadata
+    metadata_dir = os.path.join(perturbed_save_dir, 'metadata')
+    os.makedirs(metadata_dir, exist_ok=True)
+
+    # Save pix2pix generated images
+    pix2pix_dir = os.path.join(perturbed_save_dir, 'pix2pix_images')
+    os.makedirs(pix2pix_dir, exist_ok=True)
+            
     max_stride = 32
     weights = None
         
@@ -213,15 +226,60 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
 
     model.eval()
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
-    
+
+    pix2pix_model = None
+    if use_pix2pix and pix2pix_params:
+        # Save original command line arguments
+        original_argv = sys.argv.copy()
+        
+        try:
+            # Build command line arguments, using the parameters passed in
+            cmd_args = ['test.py']
+            
+            # Must provide a dataroot, but it will not be used
+            cmd_args.extend(['--dataroot', '/tmp'])
+            
+            # Add parameters from pix2pix_params
+            for key, value in pix2pix_params.items():
+                if value is not None:
+                    if isinstance(value, bool) and value:
+                        cmd_args.append(f'--{key}')
+                    else:
+                        cmd_args.extend([f'--{key}', str(value)])
+            
+            # Replace command line arguments
+            sys.argv = cmd_args
+            
+            # Parse parameters and create model
+            opt = TestOptions().parse()
+            pix2pix_model = create_pix2pix_model(opt)
+            pix2pix_model.setup(opt)
+            pix2pix_model.eval()
+            
+            model_path = os.path.join(pix2pix_params['checkpoints_dir'], 
+                                     pix2pix_params['name'], 
+                                     f"{pix2pix_params['epoch']}_net_G.pth")
+            print(f"Checking if model exists at: {model_path}")
+            print(f"Model file exists: {os.path.exists(model_path)}")
+            print(f"pix2pix_model={'exists' if pix2pix_model is not None else 'None'}")
+            
+        finally:
+            sys.argv = original_argv
+
     for batch_i, (img, target, paths, shapes) in tqdm(enumerate(val_loader), total=len(val_loader)):
+        orig_shape, ((ratio_h, ratio_w), (pad_w, pad_h)) = shapes[0]
         if not config.DEBUG:
             img = img.to(device, non_blocking=True)
             assign_target = [tgt.to(device) for tgt in target]
             target = assign_target
             nb, _, height, width = img.shape
-
         if attack_type != None:
+            for j in range(img.size(0)):
+                orig_img_tensor = img[j].cpu().detach().numpy()
+                img_filename = os.path.splitext(os.path.basename(paths[j]))[0]
+                orig_img_path = os.path.join(original_images_dir, f'{img_filename}.npy')
+                # Save as pt/npy format
+                np.save(orig_img_path, orig_img_tensor)
             img.requires_grad = True
             det_out, da_seg_out, ll_seg_out = model(img)
             inf_out, train_out = det_out
@@ -249,46 +307,249 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
                 'epsilon': epsilon,
                 'channel': channel
             }
+
             elif attack_type == 'UAP':
-                perturbed_data = perturbed_images.to(device, non_blocking=True)
-                metadata = {
-                'attack_type': attack_type,
-                'epsilon': epsilon,
-                'step_decay': step_decay
-            }
+                if epsilon == 0:
+                    perturbed_data = img
+                else:
+                    # Apply UAP directly to the current batch
+                    perturbed_data = img + uap
+                metadata.update({'step_decay': step_decay})
+
             elif attack_type == 'JSMA':
-                perturbed_data = perturbed_images
-                metadata = {
-                'attack_type': attack_type,
-                'epsilon': epsilon,
-                'num_pixels': num_pixels
-            }
+                # Get the saliency map for the current batch
+                batch_saliency = saliency_maps[batch_i * img.size(0):(batch_i + 1) * img.size(0)]
+                # Apply JSMA to the current batch
+                img_np = img.cpu().detach().numpy()
+                perturbed_data_np, _ = find_and_perturb_highest_scoring_pixels(
+                    img_np, batch_saliency, num_pixels, epsilon, 
+                    perturbation_type=perturb_type
+                )
+                perturbed_data = torch.tensor(perturbed_data_np, dtype=torch.float32, device=device)
+                
+                metadata.update({
+                    'num_pixels': num_pixels,
+                    'perturb_type': perturb_type
+                })
             else:
                 perturbed_data = img
 
             img = perturbed_data
+
+            def adjust_imagenet_norm_to_tanh_range(img):
+                """Adjust ImageNet normalized data to the [-1,1] range"""
+                if not isinstance(img, torch.Tensor):
+                    return img
                 
+                # ImageNet mean and standard deviation
+                means = torch.tensor([0.485, 0.456, 0.406]).view(-1, 1, 1).to(img.device)
+                stds = torch.tensor([0.229, 0.224, 0.225]).view(-1, 1, 1).to(img.device)
+                
+                # Inverse normalization and map to [-1,1]
+                img_unnormalized = img * stds + means  # Back to [0,1] range
+                img_adjusted = img_unnormalized * 2 - 1  # Adjust to [-1,1] range
+                
+                return img_adjusted
+            def denormalize_image(img):
+                """Convert [-1,1] range tensor back to original range"""
+                if not isinstance(img, torch.Tensor):
+                    return img
+                
+                # First convert from [-1,1] to [0,1]
+                img_unnormalized = (img + 1) / 2
+                
+                # ImageNet mean and standard deviation
+                means = torch.tensor([0.485, 0.456, 0.406]).view(-1, 1, 1).to(img.device)
+                stds = torch.tensor([0.229, 0.224, 0.225]).view(-1, 1, 1).to(img.device)
+                
+                # Apply inverse normalization
+                img_normalized = (img_unnormalized - means) / stds
+                
+                return img_normalized
+            
             # Save perturbed images
             for j in range(img.size(0)):
-                img_np = img[j].cpu().detach().numpy().transpose(1, 2, 0) * 255
-                img_np = img_np.astype(np.uint8)
-                                
+                # Save original numpy format
+                img_np = img[j].cpu().detach().numpy()             
                 img_filename = os.path.splitext(os.path.basename(paths[j]))[0]
+                # img_path = os.path.join(perturbed_images_dir, f'{img_filename}.npy')
+                # np.save(img_path, img_np)
                 
-                img_path = os.path.join(perturbed_save_dir, f'{img_filename}.jpg')
-                metadata_path = os.path.join(perturbed_save_dir, f'{img_filename}_metadata.json')
-
-                cv2.imwrite(img_path, img_np)
+                # Inverse normalization back to original range and save as jpg
+                # ImageNet standardization parameters
+                mean = np.array([0.485, 0.456, 0.406]).reshape((3, 1, 1))
+                std = np.array([0.229, 0.224, 0.225]).reshape((3, 1, 1))
+                
+                # Inverse normalization: (x * std) + mean
+                img_unnormalized = (img_np * std) + mean
+                
+                # Clip to [0,1] range
+                img_unnormalized = np.clip(img_unnormalized, 0, 1)
+                
+                # Convert to uint8 format [0,255]
+                img_uint8 = (img_unnormalized.transpose(1, 2, 0) * 255).astype(np.uint8)
+                
+                # Convert to BGR (OpenCV format)
+                img_uint8_bgr = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2BGR)
+                
+                # Save as jpg
+                jpg_path = os.path.join(perturbed_images_dir, f'{img_filename}_attack.jpg')
+                cv2.imwrite(jpg_path, img_uint8_bgr)
+                
+                metadata_path = os.path.join(metadata_dir, f'{img_filename}_metadata.json')
 
                 with open(metadata_path, 'w') as f:
                     json.dump(metadata, f, indent=4)
-        
+
+            # Use pix2pix to process the attacked image
+            if use_pix2pix and pix2pix_model is not None:
+                print(f"Using pix2pix model for attack type: {attack_type}")
+                img_normalized = adjust_imagenet_norm_to_tanh_range(img)
+                pix2pix_input = {
+                    'A': img_normalized,
+                    'A_paths': [paths[j]]
+                }
+                
+                pix2pix_model.set_input(pix2pix_input)
+                # pix2pix_model.test()
+                img = pix2pix_model.test().to(device)
+                
+                img = denormalize_image(img)
+
+            if resizer:
+                parts = resizer.split('x')
+                width = int(parts[0])
+                height = int(parts[1])
+                defense_metadata = {'defense': 'resizing', 'size': f"{width}x{height}"}
+                metadata.update(defense_metadata)
+                
+                # Process each image individually
+                resized_data = []
+                for i in range(perturbed_data.size(0)):
+                    img_np = perturbed_data[i].detach().cpu().numpy().transpose(1, 2, 0)  # [C,H,W] -> [H,W,C]
+                    # Downsample first and then upsample to eliminate attack traces
+                    img_small = cv2.resize(img_np, (width, height), interpolation=cv2.INTER_AREA)
+                    img_back = cv2.resize(img_small, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_LINEAR)
+                    img_tensor = torch.from_numpy(img_back.transpose(2, 0, 1)).float().to(device)  # [H,W,C] -> [C,H,W]
+                    resized_data.append(img_tensor)
+                perturbed_data = torch.stack(resized_data)
+
+            # 2. (JPEG Compression)
+            if quality is not None:
+                quality = int(quality)  # Ensure it's an integer
+                print(f"DEBUG: Applying JPEG compression with quality={quality}")
+                imagenet_mean = np.array([0.485, 0.456, 0.406]).reshape((3, 1, 1))
+                imagenet_std = np.array([0.229, 0.224, 0.225]).reshape((3, 1, 1))
+                
+                defense_metadata = {'defense': 'jpeg_compression', 'quality': quality}
+                metadata.update(defense_metadata)
+                compressed_data = []
+                for i in range(perturbed_data.size(0)):
+                    img_normalized = perturbed_data[i].detach().cpu().numpy()
+                    img_unnormalized = (img_normalized * imagenet_std) + imagenet_mean
+                    img_unnormalized = np.clip(img_unnormalized, 0, 1)
+
+                    img_unnorm_hwc = img_unnormalized.transpose(1, 2, 0)
+                    img_uint8 = (img_unnorm_hwc * 255).astype(np.uint8)
+                    
+                    # 4. Apply JPEG compression
+                    is_success, buffer = cv2.imencode('.jpg', img_uint8, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                    if not is_success:
+                        print("ERROR: JPEG encoding failed")
+                        compressed_data.append(perturbed_data[i])  # Use original image
+                        continue
+                    decoded_img = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+                    decoded_float = decoded_img.astype(np.float32) / 255.0
+                    decoded_chw = decoded_float.transpose(2, 0, 1)
+                    decoded_normalized = (decoded_chw - imagenet_mean) / imagenet_std
+                    img_tensor = torch.from_numpy(decoded_normalized).float().to(device)
+                    compressed_data.append(img_tensor)
+                
+                # Ensure compressed data is not empty
+                if compressed_data:
+                    perturbed_data = torch.stack(compressed_data)
+                    print(f"DEBUG: Final compressed shape={perturbed_data.shape}")
+                else:
+                    print("ERROR: No compressed data generated")
+
+            # (Bit-Depth Reduction)
+            if bit_depth is not None:
+                bit_depth = int(bit_depth)
+                print(f"DEBUG: Applying bit depth reduction with bit_depth={bit_depth}")
+                
+                defense_metadata = {'defense': 'bit_depth_reduction', 'bit_depth': bit_depth}
+                metadata.update(defense_metadata)
+                
+                # ImageNet standardization mean and standard deviation
+                imagenet_mean = np.array([0.485, 0.456, 0.406]).reshape((3, 1, 1))
+                imagenet_std = np.array([0.229, 0.224, 0.225]).reshape((3, 1, 1))
+                
+                reduced_data = []
+                for i in range(perturbed_data.size(0)):
+                    img_normalized = perturbed_data[i].detach().cpu().numpy()
+                    img_unnormalized = (img_normalized * imagenet_std) + imagenet_mean
+
+                    img_unnormalized = np.clip(img_unnormalized, 0, 1)
+                    factor = 2**(8 - bit_depth)
+                    img_quantized = np.floor(img_unnormalized * 255 / factor) * factor / 255
+                    img_renormalized = (img_quantized - imagenet_mean) / imagenet_std
+                    img_tensor = torch.from_numpy(img_renormalized).float().to(device)
+                    reduced_data.append(img_tensor)
+                
+                perturbed_data = torch.stack(reduced_data)
+            # 4. (Gaussian Blurring)
+            if gauss:
+                parts = gauss.split('x')
+                ksize_w = int(parts[0])
+                ksize_h = int(parts[1])
+                # Ensure the kernel size is odd
+                ksize_w = ksize_w if ksize_w % 2 == 1 else ksize_w + 1
+                ksize_h = ksize_h if ksize_h % 2 == 1 else ksize_h + 1
+                
+                # Get boundary type
+                border_type_map = {
+                    'default': cv2.BORDER_DEFAULT,
+                    'constant': cv2.BORDER_CONSTANT,
+                    'reflect': cv2.BORDER_REFLECT,
+                    'replicate': cv2.BORDER_REPLICATE
+                }
+                border_type = border_type_map.get(border_type, cv2.BORDER_DEFAULT)
+                
+                defense_metadata = {'defense': 'gaussian_blur', 'kernel_size': f"{ksize_w}x{ksize_h}", 'border_type': border_type}
+                metadata.update(defense_metadata)
+                
+                blurred_data = []
+                for i in range(perturbed_data.size(0)):
+                    img_np = perturbed_data[i].detach().cpu().numpy().transpose(1, 2, 0)
+                    # Apply Gaussian blur to image
+                    blurred_img = cv2.GaussianBlur(img_np, (ksize_w, ksize_h), 0, borderType=border_type)
+                    img_tensor = torch.from_numpy(blurred_img.transpose(2, 0, 1)).float().to(device)
+                    blurred_data.append(img_tensor)
+                perturbed_data = torch.stack(blurred_data)
+
+            # 5. (Noise Generation / Noise Addition)
+            if noise is not None:
+                sigma = abs(noise)  # Noise standard deviation
+                defense_metadata = {'defense': 'noise_addition', 'sigma': sigma}
+                metadata.update(defense_metadata)
+                
+                noise_data = []
+                for i in range(perturbed_data.size(0)):
+                    img_np = perturbed_data[i].detach().cpu().numpy()
+                    # Generate Gaussian noise and add to image
+                    noise = np.random.normal(0, sigma, img_np.shape).astype(np.float32)
+                    noisy_img = img_np + noise # Limiting the range to [0,1]
+                    img_tensor = torch.from_numpy(noisy_img).float().to(device)
+                    noise_data.append(img_tensor)
+                perturbed_data = torch.stack(noise_data)
+
+            # Finally assign the processed image to img
+            img = perturbed_data
         with torch.no_grad():
             pad_w, pad_h = shapes[0][1][1]
             pad_w = int(pad_w)
             pad_h = int(pad_h)
             ratio = shapes[0][1][0][0]
-
             t = time_synchronized()
             det_out, da_seg_out, ll_seg_out= model(img)
             t_inf = time_synchronized() - t
@@ -331,15 +592,12 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
             
             total_loss, head_losses = criterion((train_out,da_seg_out, ll_seg_out), target, shapes,model)   
             losses.update(total_loss.item(), img.size(0))
-            
 
             #NMS
             t = time_synchronized()
             target[0][:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [target[0][target[0][:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             output = non_max_suppression(inf_out, conf_thres= config.TEST.NMS_CONF_THRESHOLD, iou_thres=config.TEST.NMS_IOU_THRESHOLD, labels=lb)
-            #output = non_max_suppression(inf_out, conf_thres=0.001, iou_thres=0.6)
-            #output = non_max_suppression(inf_out, conf_thres=config.TEST.NMS_CONF_THRES, iou_thres=config.TEST.NMS_IOU_THRES)
             t_nms = time_synchronized() - t
             if batch_i > 0:
                 T_nms.update(t_nms/img.size(0),img.size(0))
@@ -349,13 +607,19 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
                 if batch_i == 0:
                     for i in range(test_batch_size):
                         img_filename = os.path.splitext(os.path.basename(paths[i]))[0] + '.jpg'
-                        img_path = os.path.join('lib/dataset/images/bdd100k/val', img_filename) #Path to the original image 
-
-                        # img_test = cv2.imread(paths[i])
-                        img_test = cv2.imread(img_path)
+                        img_path = os.path.join(config.DATASET.DATAROOT, img_filename)
                         
-                        # print(f"img test : {img_test.shape} \n")
+                        if not os.path.exists(img_path):
+                            img_path = paths[i]
+                        print(f"Loading image from: {img_path}")
+                        img_test = cv2.imread(img_path)
+                        # Check if image was loaded successfully
+                        if img_test is None:
+                            print(f"Error: Could not load image from {img_path}. Skipping visualization for this image.")
+                            break
+
                         da_seg_mask = da_seg_out[i][:, pad_h:height-pad_h, pad_w:width-pad_w].unsqueeze(0)
+
                         da_seg_mask = torch.nn.functional.interpolate(da_seg_mask, scale_factor=int(1/ratio), mode='bilinear')
                         _, da_seg_mask = torch.max(da_seg_mask, 1)
 
@@ -365,14 +629,12 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
 
                         da_seg_mask = da_seg_mask.int().squeeze().cpu().numpy()
                         da_gt_mask = da_gt_mask.int().squeeze().cpu().numpy()
-                        # seg_mask = seg_mask > 0.5
-                        # plot_img_and_mask(img_test, seg_mask, i,epoch,save_dir)
-                        img_test1 = img_test.copy()
 
+                        img_test1 = img_test.copy()
+                        
                         _ = show_seg_result(img_test, da_seg_mask, i, epoch,save_dir)
                         _ = show_seg_result(img_test1, da_gt_mask, i, epoch, save_dir, is_gt=True)
 
-                        # img_ll = cv2.imread(paths[i])
                         img_ll = cv2.imread(img_path)
                         ll_seg_mask = ll_seg_out[i][:, pad_h:height-pad_h, pad_w:width-pad_w].unsqueeze(0)
                         ll_seg_mask = torch.nn.functional.interpolate(ll_seg_mask, scale_factor=int(1/ratio), mode='bilinear')
@@ -384,32 +646,33 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
 
                         ll_seg_mask = ll_seg_mask.int().squeeze().cpu().numpy()
                         ll_gt_mask = ll_gt_mask.int().squeeze().cpu().numpy()
-                        # seg_mask = seg_mask > 0.5
-                        # plot_img_and_mask(img_test, seg_mask, i,epoch,save_dir)
+
                         img_ll1 = img_ll.copy()
                         _ = show_seg_result(img_ll, ll_seg_mask, i,epoch,save_dir, is_ll=True)
                         _ = show_seg_result(img_ll1, ll_gt_mask, i, epoch, save_dir, is_ll=True, is_gt=True)
 
                         img_det = cv2.imread(img_path) 
+                        
+                        # Check if image was loaded successfully
+                        if img_det is None:
+                            print(f"Error: Could not load image from {img_path}. Skipping visualization for this image.")
+                            continue
+                            
                         img_gt = img_det.copy()
                         det = output[i].clone()
                         
                         if len(det):
                             det[:,:4] = scale_coords(img[i].shape[1:],det[:,:4],img_det.shape).round()
                         for *xyxy,conf,cls in reversed(det):
-                            #print(cls)
                             label_det_pred = f'{names[int(cls)]} {conf:.2f}'
                             plot_one_box(xyxy, img_det , label=label_det_pred, color=colors[int(cls)], line_thickness=3)
                         cv2.imwrite(save_dir+"/batch_{}_{}_det_pred.png".format(epoch,i),img_det)
 
                         labels = target[0][target[0][:, 0] == i, 1:]
-                        # print(labels)
                         labels[:,1:5]=xywh2xyxy(labels[:,1:5])
                         if len(labels):
                             labels[:,1:5]=scale_coords(img[i].shape[1:],labels[:,1:5],img_gt.shape).round()
                         for cls,x1,y1,x2,y2 in labels:
-                            #print(names)
-                            #print(cls)
                             label_det_gt = f'{names[int(cls)]}'
                             xyxy = (x1,y1,x2,y2)
                             plot_one_box(xyxy, img_gt , label=label_det_gt, color=colors[int(cls)], line_thickness=3)
@@ -501,13 +764,8 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
 
         if config.TEST.PLOTS and batch_i < 3:
             f = save_dir +'/'+ f'test_batch{batch_i}_labels.jpg'  # labels
-            #Thread(target=plot_images, args=(img, target[0], paths, f, names), daemon=True).start()
             f = save_dir +'/'+ f'test_batch{batch_i}_pred.jpg'  # predictions
-            #Thread(target=plot_images, args=(img, output_to_target(output), paths, f, names), daemon=True).start()
 
-
-        if batch_i == 2:
-            break        
     # Compute statistics
     # stats : [[all_img_correct]...[all_img_tcls]]
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy  zip(*) :unzip
@@ -525,8 +783,6 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
     # Print results
     pf = '%20s' + '%12.3g' * 6  # print format
     print(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
-    #print(map70)
-    #print(map75)
 
     # Print results per class
     if (verbose or (nc <= 20 and not training)) and nc > 1 and len(stats):
@@ -582,11 +838,7 @@ def validate(epoch, config, val_loader, val_dataset, model, criterion, output_di
     da_segment_result = (da_acc_seg.avg,da_IoU_seg.avg,da_mIoU_seg.avg)
     ll_segment_result = (ll_acc_seg.avg,ll_IoU_seg.avg,ll_mIoU_seg.avg)
     
-    # print(da_segment_result)
-    # print(ll_segment_result)
     detect_result = np.asarray([mp, mr, map50, map])
-    # print('mp:{},mr:{},map50:{},map:{}'.format(mp, mr, map50, map))
-    #print segmet_result
     t = [T_inf.avg, T_nms.avg]
     
     metric_result = {

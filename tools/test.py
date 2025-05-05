@@ -34,6 +34,9 @@ from lib.core.Attacks.UAP import uap_sgd_yolop
 import datetime
 import matplotlib.pyplot as plt
 
+sys.path.append('/media/yunge/HDD1/REU-2024-YOLOP/pytorch-CycleGAN-and-pix2pix')  # Ensure the path is correct
+from options.test_options import TestOptions
+
 sns.set_theme(style="darkgrid", palette="Spectral")
 
 def plot_metrics(results_df, metric_list, x_param, attack_type, baseline_metrics, exp_output_dir):
@@ -229,12 +232,12 @@ def parse_args():
                     default='R')
     
     # Defenses 
-    parser.add_argument('--resizer', type=str, help='Desired WIDTHxHEIGHT of your resized image')
-    parser.add_argument('--quality', type=int, help='Desired quality for JPEG compression output. 0 - 100')
-    parser.add_argument('--border_type', type=str, choices=['default', 'constant', 'reflect', 'replicate'], help= 'border type for Gaussian Blurring')
-    parser.add_argument('--gauss', type=str, help="Apply Gaussian Blurring to image. Specify ksize as WIDTHxHEIGHT")
-    parser.add_argument('--noise', type=float, help='Add Gaussian Noise to image. Specify sigma value for noise generation.')
-    parser.add_argument('--bit_depth', type=int, help='Choose bit value between 1 - 8')
+    parser.add_argument('--resizer', type=str, help='Desired WIDTHxHEIGHT of your resized image(1024x576)')
+    parser.add_argument('--quality', type=int, help='Desired quality for JPEG compression output. 0 - 100(80)')
+    parser.add_argument('--border_type', type=str, choices=['default', 'constant', 'reflect', 'replicate'], help= 'border type for Gaussian Blurring(default)')
+    parser.add_argument('--gauss', type=str, help="Apply Gaussian Blurring to image. Specify ksize as WIDTHxHEIGHT(3x3)")
+    parser.add_argument('--noise', type=float, help='Add Gaussian Noise to image. Specify sigma value for noise generation.(0.01)')
+    parser.add_argument('--bit_depth', type=int, help='Choose bit value between 1 - 8(8)')
 
     args = parser.parse_args()
     return args
@@ -544,6 +547,8 @@ def main():
     
     # Baseline validation to generate normal metrics
     normal_logger, normal_output_dir = create_experiment_logger(base_output_dir, 0, 'baseline')
+        
+    
     da_segment_results, ll_segment_results, detect_results, total_loss, maps, times = validate(
         epoch, cfg, valid_loader, valid_dataset, model, criterion,
         normal_output_dir, base_tb_log_dir, writer_dict=writer_dict, logger=normal_logger, device=device, rank=-1,
@@ -555,21 +560,54 @@ def main():
     msg = create_log_message(da_segment_results, ll_segment_results, detect_results, total_loss, times)
     normal_logger.info(msg)
 
+    def save_combined_results(results_df, attack_type, exp_output_dir):
+        """
+        Save all results to an Excel file
+        
+        Args:
+            results_df (pd.DataFrame): DataFrame containing all results
+            attack_type (str): Attack type
+            exp_output_dir (str): Output directory
+        """
+        # Ensure the output directory exists
+        os.makedirs(exp_output_dir, exist_ok=True)
+        
+        # Save as an Excel file
+        output_file = os.path.join(exp_output_dir, f'{attack_type}_all_results_drivable.xlsx')
+        results_df.to_excel(output_file, index=False)
+        print(f"All results have been saved to: {output_file}")
+    
     results = []
 
     # Now run validations for each attack type
     if attack_type == "FGSM":
-        epsilons = [0.0, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5] if args.experiment_mode == 1 else [args.epsilon] 
+        epsilons = [0.1] if args.experiment_mode == 1 else [args.epsilon] 
+        # epsilons = [0.0, 0.001, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5] if args.experiment_mode == 1 else [args.epsilon] 
         '''.1, .3, .5, .75, 1, 3, 5, 7, 10'''
         for experiment_number, epsilon in enumerate(epsilons, start=1):
             exp_logger, exp_output_dir = create_experiment_logger(base_output_dir, experiment_number, attack_type, epsilon=epsilon)
+            
+            pix2pix_params = {
+                'name': 'pix2pixnew',
+                'model': 'test',
+                'netG': 'resnet_9blocks',
+                'preprocess': 'none',
+                'batch_size': 2,
+                'epoch': 100,
+                'dataset_mode': 'single',
+                'norm': 'batch',
+                'checkpoints_dir': 'pytorch-CycleGAN-and-pix2pix/checkpoints'  # Set to your actual path
+            }
             da_segment_results, ll_segment_results, detect_results, total_loss, maps, times = validate(
                 epoch, cfg, valid_loader, valid_dataset, model, criterion,
                 exp_output_dir, base_tb_log_dir, writer_dict=writer_dict, logger=exp_logger, device=device, rank=-1,
-                attack_type=args.fgsm_attack_type, epsilon=epsilon, experiment_number=experiment_number
-            )
+                attack_type=args.fgsm_attack_type, epsilon=epsilon, experiment_number=experiment_number, use_pix2pix=False, pix2pix_params=pix2pix_params,
+                resizer=args.resizer, quality=args.quality, bit_depth=args.bit_depth, 
+                gauss=args.gauss, border_type=args.border_type, noise=args.noise)
+
             msg = create_log_message(da_segment_results, ll_segment_results, detect_results, total_loss, times)
             exp_logger.info(msg)
+
             results.append({
                 "epsilon": epsilon,
                 "da_acc_seg": da_segment_results[0],
@@ -578,15 +616,16 @@ def main():
                 "ll_acc_seg": ll_segment_results[0],
                 "ll_IoU_seg": ll_segment_results[1],
                 "ll_mIoU_seg": ll_segment_results[2],
-                "detect_result": detect_results,
+                "detect_P": detect_results[0],  # Precision
+                "detect_R": detect_results[1],  # Recall
+                "detect_mAP50": detect_results[2],  # mAP@0.5
+                "detect_mAP": detect_results[3],  # mAP@0.5:0.95
                 "loss_avg": total_loss,
                 "time": times
             })
-        
             process_results(exp_output_dir, exp_logger, da_segment_results, ll_segment_results, detect_results, total_loss, normal_metrics, 'epsilon', epsilon)
-        
         results_df = pd.DataFrame(results)
-        
+        save_combined_results(results_df, attack_type, exp_output_dir)
         # Define normal_metrics, metrics, and param_name
         metrics = ['da_acc_seg', 'da_IoU_seg', 'da_mIoU_seg', 'll_acc_seg', 'll_IoU_seg', 'll_mIoU_seg', 'loss_avg']
         param_name = 'epsilon'
@@ -596,10 +635,16 @@ def main():
 
     elif attack_type == "JSMA":
         perturbation_params = [
-    (9216, 0.01, 'add'), (18432, 0.01, 'add'), (27648, 0.01, 'add'), (36864, 0.01, 'add'), (46080, 0.01, 'add'), 
-    (55296, 0.1, 'add'), (64512, 0.1, 'add'), (73728, 0.1, 'add'), (82944, 0.1, 'add'), (92160, 0.1, 'add'),
-    (101376, 0.5, 'add'), (193536, 0.5, 'add'), (285696, 0.5, 'add'), (377856, 0.5, 'add'), (470016, 0.5, 'add'), 
-    (562176, 1, 'add'), (654336, 1, 'add'), (746496, 1, 'add'), (838656, 1, 'add'), (921600, 1, 'add') # 921600 pixels in a 1280 x 720 image
+    (46080, 0.1, 'noise'), (92160, 0.1, 'noise'), (138240, 0.1, 'noise'), (184320, 0.1, 'noise'), (368640, 0.1, 'noise'), (552960, 0.1, 'noise'), (737280, 0.1, 'noise'), (921600, 0.1, 'noise'),
+    (46080, 0.2, 'noise'), (92160, 0.2, 'noise'), (138240, 0.2, 'noise'), (184320, 0.2, 'noise'), (368640, 0.2, 'noise'), (552960, 0.2, 'noise'), (737280, 0.2, 'noise'), (921600, 0.2, 'noise'),
+    (46080, 0.3, 'noise'), (92160, 0.3, 'noise'), (138240, 0.3, 'noise'), (184320, 0.3, 'noise'), (368640, 0.3, 'noise'), (552960, 0.3, 'noise'), (737280, 0.3, 'noise'), (921600, 0.3, 'noise'),
+    (46080, 0.4, 'noise'), (92160, 0.4, 'noise'), (138240, 0.4, 'noise'), (184320, 0.4, 'noise'), (368640, 0.4, 'noise'), (552960, 0.4, 'noise'), (737280, 0.4, 'noise'), (921600, 0.4, 'noise'), 
+    (46080, 0.5, 'noise'), (92160, 0.5, 'noise'), (138240, 0.5, 'noise'), (184320, 0.5, 'noise'), (368640, 0.5, 'noise'), (552960, 0.5, 'noise'), (737280, 0.5, 'noise'), (921600, 0.5, 'noise'),
+    (46080, 0.6, 'noise'), (92160, 0.6, 'noise'), (138240, 0.6, 'noise'), (184320, 0.6, 'noise'), (368640, 0.6, 'noise'), (552960, 0.6, 'noise'), (737280, 0.6, 'noise'), (921600, 0.6, 'noise'),
+    (46080, 0.7, 'noise'), (92160, 0.7, 'noise'), (138240, 0.7, 'noise'), (184320, 0.7, 'noise'), (368640, 0.7, 'noise'), (552960, 0.7, 'noise'), (737280, 0.7, 'noise'), (921600, 0.7, 'noise'), 
+    (46080, 0.8, 'noise'), (92160, 0.8, 'noise'), (138240, 0.8, 'noise'), (184320, 0.8, 'noise'), (368640, 0.8, 'noise'), (552960, 0.8, 'noise'), (737280, 0.8, 'noise'), (921600, 0.8, 'noise'),
+    (46080, 0.9, 'noise'), (92160, 0.9, 'noise'), (138240, 0.9, 'noise'), (184320, 0.9, 'noise'), (368640, 0.9, 'noise'), (552960, 0.9, 'noise'), (737280, 0.9, 'noise'), (921600, 0.9, 'noise'),
+    (46080, 1, 'noise'), (92160, 1, 'noise'), (138240, 1, 'noise'), (184320, 1, 'noise'), (368640, 1, 'noise'), (552960, 1, 'noise'), (737280, 1, 'noise'), (921600, 1, 'noise')  # 921600 pixels in a 1280 x 720 image
 ] if args.experiment_mode else [(args.num_pixels, args.jsma_perturbation, args.jsma_attack_type)]
         
         for experiment_number, (num_pixels, perturb_value, perturb_type) in enumerate(perturbation_params, start=1):
@@ -608,21 +653,13 @@ def main():
 
             saliency_maps = calculate_saliency(model, valid_loader, device, cfg, criterion)
             
-            images = []
-            for batch in valid_loader:
-                images.extend(batch[0].numpy())
-                if 0 == 0:
-                    print("Breaking...")
-                    break
-            
-            perturbed_images, _ = find_and_perturb_highest_scoring_pixels(images, saliency_maps, num_pixels, perturb_value, perturbation_type=perturb_type)
-            
+            # perturbed_images, _ = find_and_perturb_highest_scoring_pixels(images, saliency_maps, num_pixels, perturb_value, perturbation_type=perturb_type)
             exp_logger, exp_output_dir = create_experiment_logger(base_output_dir, experiment_number, attack_type, epsilon=perturb_value, num_pixels=num_pixels)
-            
             da_segment_results, ll_segment_results, detect_results, total_loss, maps, times = validate(
                 epoch, cfg, valid_loader, valid_dataset, model, criterion,
-                exp_output_dir, base_tb_log_dir, perturbed_images=perturbed_images, writer_dict=writer_dict, logger=exp_logger, device=device, rank=-1,
-                attack_type=attack_type, num_pixels=num_pixels, experiment_number=experiment_number, epsilon=perturb_value
+                exp_output_dir, base_tb_log_dir, writer_dict=writer_dict, logger=exp_logger, device=device, rank=-1,
+                attack_type=attack_type, num_pixels=num_pixels, experiment_number=experiment_number, epsilon=perturb_value,
+                perturb_type=perturb_type, saliency_maps=saliency_maps
             )
             
             msg = create_log_message(da_segment_results, ll_segment_results, detect_results, total_loss, times)
@@ -637,28 +674,30 @@ def main():
                 "ll_acc_seg": ll_segment_results[0],
                 "ll_IoU_seg": ll_segment_results[1],
                 "ll_mIoU_seg": ll_segment_results[2],
-                "detect_result": detect_results,
+                "detect_P": detect_results[0],  # Precision
+                "detect_R": detect_results[1],  # Recall
+                "detect_mAP50": detect_results[2],  # mAP@0.5
+                "detect_mAP": detect_results[3],  # mAP@0.5:0.95
                 "loss_avg": total_loss,
                 "time": times
             })
             process_results(exp_output_dir, exp_logger, da_segment_results, ll_segment_results, detect_results, total_loss, normal_metrics, 'num_pixels', num_pixels)
 
         results_df = pd.DataFrame(results)
-        
+        save_combined_results(results_df, attack_type, exp_output_dir)
         print(f"\n{results_df}\n")
 
         # Define normal_metrics, metrics, and param_name
-        # normal_metrics = create_normal_metrics(da_segment_results, ll_segment_results, detect_results, total_loss)
         metrics = ['da_acc_seg', 'da_IoU_seg', 'da_mIoU_seg', 'll_acc_seg', 'll_IoU_seg', 'll_mIoU_seg', 'loss_avg']
         param_name = 'perturb_value'
 
         create_and_save_table(results_df, normal_metrics, metrics, param_name, f'{exp_output_dir}/{param_name}_results', results_df[param_name].unique(), '0', combine=True)
-        # plot_metrics(results_df, metrics, param_name, 'JSMA', normal_metrics, exp_output_dir)
-        # plot_metrics_separate(results_df, metrics, 'num_pixels', 'JSMA', normal_metrics, exp_output_dir)
         plot_metrics(results_df, metrics, param_name, 'JSMA', normal_metrics, exp_output_dir)
 
     elif attack_type == "UAP":
         uap_params = [
+            (5, 0, 0, None, None, 7),
+            (5, 0.001, 0.0001, None, None, 7),
             (5, 0.1, 0.01, None, None, 7),
             (5, 0.5, 0.05, None, None, 7),
             (5, 1.0, 0.1, None, None, 7),
@@ -686,23 +725,10 @@ def main():
             
             exp_logger, exp_output_dir = create_experiment_logger(base_output_dir, experiment_number, attack_type, epsilon=eps, step_decay=step_decay)
             
-            images = []
-            count = 0
-            for batch in valid_loader:
-                images.extend(batch[0].numpy())
-
-                # if len(images) >= len(valid_loader.dataset):
-                if count == 0:
-                    break
-
-            perturbed_images = torch.clamp(torch.tensor(images, dtype=torch.float32) + uap.unsqueeze(0), 0, 1)
-            
-            perturbed_images = perturbed_images.squeeze(0)
-            
             da_segment_results, ll_segment_results, detect_results, total_loss, maps, times = validate(
                 epoch, cfg, valid_loader, valid_dataset, model, criterion,
                 exp_output_dir, base_tb_log_dir, writer_dict=writer_dict, logger=exp_logger, device=device, rank=-1,
-                attack_type=attack_type, step_decay=step_decay, epsilon=eps, experiment_number=experiment_number, perturbed_images=perturbed_images
+                attack_type=attack_type, step_decay=step_decay, epsilon=eps, experiment_number=experiment_number, uap=uap
             )
             msg = create_log_message(da_segment_results, ll_segment_results, detect_results, total_loss, times)
             exp_logger.info(msg)
@@ -719,12 +745,17 @@ def main():
                 "ll_acc_seg": ll_segment_results[0],
                 "ll_IoU_seg": ll_segment_results[1],
                 "ll_mIoU_seg": ll_segment_results[2],
+                "detect_P": detect_results[0],  # Precision
+                "detect_R": detect_results[1],  # Recall
+                "detect_mAP50": detect_results[2],  # mAP@0.5
+                "detect_mAP": detect_results[3],  # mAP@0.5:0.95
                 "loss_avg": total_loss,
+                "time": times
             })
             process_results(exp_output_dir, exp_logger, da_segment_results, ll_segment_results, detect_results, total_loss, normal_metrics, 'epsilon', eps)
 
         results_df = pd.DataFrame(results)
-        
+        save_combined_results(results_df, attack_type, exp_output_dir)
         # Define normal_metrics, metrics, and param_name
         # normal_metrics = create_normal_metrics(da_segment_results, ll_segment_results, detect_results, total_loss)
         metrics = ['da_acc_seg', 'da_IoU_seg', 'da_mIoU_seg', 'll_acc_seg', 'll_IoU_seg', 'll_mIoU_seg', 'loss_avg']
@@ -735,11 +766,15 @@ def main():
 
     elif attack_type == "CCP":
         ccp_params = [
-        (0.01, 'R'), (0.05, 'R'), (0.10, 'R'), (0.20, 'R'), (0.50, 'R'), (1.00, 'R'),
-        (0.01, 'G'), (0.05, 'G'), (0.10, 'G'), (0.20, 'G'), (0.50, 'G'), (1.00, 'G'),
-        (0.01, 'B'), (0.05, 'B'), (0.10, 'B'), (0.20, 'B'), (0.50, 'B'), (1.00, 'B')
+        (0, 'R'), (0.001, 'R'), (0.01, 'R'), (0.05, 'R'), (0.10, 'R'), (0.20, 'R'), (0.50, 'R'), (1.00, 'R'),
+        (0, 'G'), (0.001, 'G'), (0.01, 'G'), (0.05, 'G'), (0.10, 'G'), (0.20, 'G'), (0.50, 'G'), (1.00, 'G'),
+        (0, 'B'), (0.001, 'B'), (0.01, 'B'), (0.05, 'B'), (0.10, 'B'), (0.20, 'B'), (0.50, 'B'), (1.00, 'B')
         ] if args.experiment_mode else [(args.epsilon, args.color_channel)]
-        
+        # ccp_params = [
+        # (0.00, 'R'), 
+        # (0.00, 'G'), 
+        # (0.00, 'B')
+        # ] if args.experiment_mode else [(args.epsilon, args.color_channel)]
         for experiment_number, (epsilon, color_channel) in enumerate(ccp_params, start=1):
             exp_logger, exp_output_dir = create_experiment_logger(base_output_dir, experiment_number, attack_type, epsilon=epsilon, channel=color_channel)
             
@@ -759,14 +794,17 @@ def main():
                 "ll_acc_seg": ll_segment_results[0],
                 "ll_IoU_seg": ll_segment_results[1],
                 "ll_mIoU_seg": ll_segment_results[2],
-                "detect_result": detect_results,
+                "detect_P": detect_results[0],  # Precision
+                "detect_R": detect_results[1],  # Recall
+                "detect_mAP50": detect_results[2],  # mAP@0.5
+                "detect_mAP": detect_results[3],  # mAP@0.5:0.95
                 "loss_avg": total_loss,
                 "time": times
             })
             process_results(exp_output_dir, exp_logger, da_segment_results, ll_segment_results, detect_results, total_loss, normal_metrics, 'epsilon', epsilon)
 
         results_df = pd.DataFrame(results)
-        
+        save_combined_results(results_df, attack_type, exp_output_dir)
         # Define normal_metrics, metrics, and param_name
         # normal_metrics = create_normal_metrics(da_segment_results, ll_segment_results, detect_results, total_loss)
         metrics = ['da_acc_seg', 'da_IoU_seg', 'da_mIoU_seg', 'll_acc_seg', 'll_IoU_seg', 'll_mIoU_seg', 'loss_avg']

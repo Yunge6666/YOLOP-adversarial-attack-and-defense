@@ -33,6 +33,12 @@ class BddDataset(AutoDriveDataset):
         print('building database...')
         gt_db = []
         height, width = self.shapes
+        # Original detection label size
+        original_height, original_width = 720, 1280
+        
+        # Calculate scaling factor
+        scale_x = width / original_width
+        scale_y = height / original_height
         for mask in tqdm(list(self.mask_list)):
             mask_path = str(mask)
             label_path = mask_path.replace(str(self.mask_root), str(self.label_root)).replace(".png", ".json")
@@ -42,7 +48,6 @@ class BddDataset(AutoDriveDataset):
                 image_path = mask_path.replace(str(self.mask_root), str(self.img_root)).replace(".png", ".jpg")
             else:
                 base_name = os.path.splitext(os.path.basename(mask_path).split('_')[0])[0]
-                # print(base_name)
                 image_path = os.path.join(str(self.img_root), f"{base_name}.jpg")
                 
             lane_path = mask_path.replace(str(self.mask_root), str(self.lane_root))
@@ -57,10 +62,11 @@ class BddDataset(AutoDriveDataset):
                     color = obj['attributes']['trafficLightColor']
                     category = "tl_" + color
                 if category in id_dict.keys():
-                    x1 = float(obj['box2d']['x1'])
-                    y1 = float(obj['box2d']['y1'])
-                    x2 = float(obj['box2d']['x2'])
-                    y2 = float(obj['box2d']['y2'])
+                    # First scale the boundary box coordinates
+                    x1 = float(obj['box2d']['x1']) * scale_x
+                    y1 = float(obj['box2d']['y1']) * scale_y
+                    x2 = float(obj['box2d']['x2']) * scale_x
+                    y2 = float(obj['box2d']['y2']) * scale_y
                     cls_id = id_dict[category]
                     if single_cls:
                          cls_id=0

@@ -226,7 +226,7 @@ def main():
             # print(model.named_parameters)
             for k, v in model.named_parameters():
                 v.requires_grad = True  # train all layers
-                if k.split(".")[1] in Encoder_para_idx + Da_Seg_Head_para_idx + Det_Head_para_idx:
+                if k.split(".")[1] in Da_Seg_Head_para_idx + Det_Head_para_idx:
                     print('freezing %s' % k)
                     v.requires_grad = False
 
@@ -235,7 +235,7 @@ def main():
             # print(model.named_parameters)
             for k, v in model.named_parameters():
                 v.requires_grad = True  # train all layers
-                if k.split(".")[1] in Encoder_para_idx + Ll_Seg_Head_para_idx + Det_Head_para_idx:
+                if k.split(".")[1] in Ll_Seg_Head_para_idx + Det_Head_para_idx:
                     print('freezing %s' % k)
                     v.requires_grad = False
         

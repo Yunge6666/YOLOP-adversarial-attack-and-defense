@@ -55,7 +55,7 @@ def parse_args():
     parser.add_argument('--batch_size',
                         help='number of combinations to process in each batch',
                         type=int,
-                        default=10)
+                        default=2)
     return parser.parse_args()
 
 def read_attacked_metrics(csv_paths):
