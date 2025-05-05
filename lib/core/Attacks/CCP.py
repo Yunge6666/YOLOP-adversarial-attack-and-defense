@@ -27,8 +27,6 @@ def color_channel_perturbation(image, epsilon, data_grad, channel='R'):
     # Apply the perturbation to the selected color channel
     perturbed_image = image + epsilon * sign_data_grad * mask
 
-    # Adding clipping to maintain [0, 1] range
-    perturbed_image = torch.clamp(perturbed_image, 0, 1)
 
     return perturbed_image
 

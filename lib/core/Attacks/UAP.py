@@ -48,7 +48,6 @@ def uap_sgd_yolop(model, valid_loader, device, nb_epoch, eps, criterion, step_de
             
             # Apply perturbation                  
             perturbed_img = img + uap
-            perturbed_img = torch.clamp(perturbed_img, 0, 1)
             
             # Forward pass
             det_out, da_seg_out, ll_seg_out = model(perturbed_img)
@@ -69,13 +68,8 @@ def uap_sgd_yolop(model, valid_loader, device, nb_epoch, eps, criterion, step_de
             # Clip perturbation to be within [-eps, eps]
             uap.data = torch.clamp(uap.data, -eps, eps)
             
-            if batch_i == 0:
-                break
         
         scheduler.step()
         losses.append(epoch_loss / len(valid_loader))
-        
-        if epoch == 2:
-            break
 
     return uap.detach(), losses

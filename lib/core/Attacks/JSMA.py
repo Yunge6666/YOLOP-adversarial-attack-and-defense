@@ -45,11 +45,9 @@ def calculate_saliency(model, valid_loader, device, config, criterion):
         total_loss.backward()
         
         # Compute saliency map for each image in the batch
-        saliency_maps_batch = img.grad.abs().detach().numpy()
+        saliency_maps_batch = img.grad.abs().cpu().detach().numpy()
         saliency_maps.append(saliency_maps_batch)
         
-        if batch_i == 0:
-            break
         
     end_t = time.time()
     
@@ -77,8 +75,6 @@ def find_and_perturb_highest_scoring_pixels(images, saliency_maps, num_pixels_to
     """
     perturbed_images = []
     all_top_coords = []
-    
-
     for image, saliency_map in zip(images, saliency_maps):
         # Flatten the saliency map to get the indices of the top pixels
         flat_indices = np.argsort(saliency_map.flatten())[::-1]
@@ -90,7 +86,6 @@ def find_and_perturb_highest_scoring_pixels(images, saliency_maps, num_pixels_to
 
         # Create a copy of the image to perturb
         perturbed_image = image.copy()
-        
         # Apply perturbation to the top pixels
         for coord in zip(*top_coords):
             if perturbation_type == 'add':
@@ -100,13 +95,14 @@ def find_and_perturb_highest_scoring_pixels(images, saliency_maps, num_pixels_to
             elif perturbation_type == 'noise':
                 perturbed_image[coord] += np.random.normal(perturbation_value)
 
-        # Ensure pixel values are within valid range if necessary
-        perturbed_image = np.clip(perturbed_image, 0, 1)
 
         # Convert the perturbed image to a tensor and add a batch dimension
-        perturbed_image_tensor = torch.tensor(perturbed_image, dtype=torch.float32).unsqueeze(0)
+        perturbed_image_tensor = torch.tensor(perturbed_image, dtype=torch.float32)
+        # Make sure the tensor is on the GPU if available
+        if torch.cuda.is_available():
+            perturbed_image_tensor = perturbed_image_tensor.cuda()
+        perturbed_image_tensor = perturbed_image_tensor.unsqueeze(0)
         perturbed_images.append(perturbed_image_tensor)
 
         all_top_coords.append(top_coords)
-        
     return torch.cat(perturbed_images, dim=0), all_top_coords

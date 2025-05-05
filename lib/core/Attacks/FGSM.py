@@ -29,10 +29,6 @@ def fgsm_attack(image, epsilon, data_grad):
     else:
         # Create the perturbed image by adjusting each pixel of the input image
         perturbed_image = image + epsilon * sign_data_grad
-
-    # Adding clipping to maintain [0,1] range
-    perturbed_image = torch.clamp(perturbed_image, 0, 1)
-    
     return perturbed_image
 
 def fgsm_attack_with_noise(image, epsilon, data_grad):
