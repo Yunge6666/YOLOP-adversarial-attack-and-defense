@@ -1,7 +1,6 @@
 ### Abstract
 
-Autonomous vehicles (AVs) leverage machine-learning perception models to detect and classify critical objects such as road signs, vehicles, lane lines, hazards, and pedestrians, enabling self-driving functionalities. With the nationwide proliferation of AVs, the demand for safe, secure, accurate, and rapid driving perception models has surged dramatically. Panoptic perception models have been proposed to offer advanced object detection and segmentation capabilities for AVs. This work explores the robustness of panoptic perception models against adversarial attacks, focusing on the YOLO-P (You Only Look Once for Panoptic Driving Perception) model. To comprehensively evaluate the safety of panoptic perception models, the model is subjected to various adversarial attacks, including the Fast Gradient Sign Method (FGSM), Jacobian-based Saliency Map Attack (JSMA), Color Channel Perturbations (CCP), and Universal Adversarial Perturbations (UAP), to assess their effects on model performance. Subsequent defenses, including image pre-processing techniques and the deployment of a Defense Generative Adversarial Network (GAN), are implemented to mitigate attack effects. The findings reveal deprecated performance post-attack implementation, with only marginal improvement in the performance of models post-defense application. These results suggest the necessity for further research into more effective defense mechanisms to ensure the safety and reliability of AVs against adversarial threats.
-
+Autonomous vehicles (AVs) leverage machine-learning perception models to detect and classify critical objects such as road signs, vehicles, lane lines, hazards, and pedestrians, enabling self-driving functionalities. With the nationwide proliferation of AVs, the demand for safe, secure, accurate, and rapid driving perception models has surged dramatically. Panoptic perception models have been proposed to offer advanced object detection and segmentation capabilities for AVs. This work explores the robustness of panoptic perception models against adversarial attacks, focusing on the YOLO-P (You Only Look Once for Panoptic Driving Perception) model. To comprehensively evaluate the safety of panoptic perception models, the model is subjected to various adversarial attacks, including the Fast Gradient Sign Method (FGSM), Jacobian-based Saliency Map Attack (JSMA), Color Channel Perturbations (CCP), and Universal Adversarial Perturbations (UAP), to assess their effects on model performance. Subsequent defenses, including image pre-processing techniques and the deployment of a Defense Generative Adversarial Network (GAN), are implemented to mitigate attack effects.
 ### Repository Contents
 
 - **YOLOP Source Code**
@@ -56,8 +55,11 @@ Autonomous vehicles (AVs) leverage machine-learning perception models to detect 
 
   
 #### Defense Application
+
+Apply a certain defense to a specific attack.
+
 ```shell
-python tools/test.py --weights weights/End-to-end.pth --attack <attack type> --<defense type> <options>
+python tools/test.py --weights <path to pretrained model> --attack <attack type> --<defense type> <options>
 
 Eg:
 python tools/test.py --weights weights/End-to-end.pth --attack FGSM --resizer 64x64
@@ -80,7 +82,11 @@ For the usage of pix2pix, such as training and evaluation, please refer to the s
 ```shell
 python train.py --dataroot datasets/bdd100k --name train --model pix2pix --netG resnet_9blocks --preprocess none --batch_size 1 --dataset_mode aligned
 ```
+Use pix2pix to defend against a certain attack method.
 
+```shell
+python tools/test.py --weights <path to pretrained model> --attack <attack type> --use_pix2pix
+```
 ### Resources and Links
 
 As part of the DEFENSE GAN training, 8000 adversarial versions of images within the BDD100K training image set were generated. Access is provided via the following Google Drive links:
