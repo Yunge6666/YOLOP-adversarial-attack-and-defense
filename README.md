@@ -82,7 +82,7 @@ For the usage of pix2pix, such as training and evaluation, please refer to the s
 ```shell
 python pytorch-CycleGAN-and-pix2pix/train.py --dataroot datasets/bdd100k --name train --model pix2pix --netG resnet_9blocks --preprocess none --batch_size 1 --dataset_mode aligned
 ```
-Use pix2pix to defend against a certain attack method.
+Use pix2pix to defend against a specific attack method.
 
 ```shell
 python tools/test.py --weights <path to pretrained model> --attack <attack type> --use_pix2pix
@@ -96,5 +96,5 @@ As part of the DEFENSE GAN training, 8000 adversarial versions of images within 
 ### Outside Sources
 
 - [YOLOP GitHub Repository](https://github.com/hustvl/YOLOP)
-- [BDD100K Dataset Documentation and Download](https://doc.bdd100k.com/download.html)
+- [BDD100K Dataset](https://github.com/bdd100k/bdd100k)
 - [pix2pix](https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix)
